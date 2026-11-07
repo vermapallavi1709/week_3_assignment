@@ -33,8 +33,7 @@ try:
 except ImportError:
     pass
 
-from test_backend_integration import RAGGenerator, GenerationConfig, SYSTEM_PROMPT
-
+from rag_generate import RAGGenerator, GenerationConfig, SYSTEM_PROMPT
 
 # Global instances
 rag_generator: Optional[RAGGenerator] = None
@@ -54,10 +53,8 @@ async def lifespan(app: FastAPI):
     print("="*60)
     
     config = GenerationConfig(
-        llm_provider="openai",
         retrieval_top_k=8,
-        refine_query=True,
-        use_reranker=True
+        refine_query=True
     )
     
     rag_generator = RAGGenerator(config)
@@ -228,70 +225,20 @@ async def stream_rag_response(
         context = rag_generator._format_context(results)
         sources_metadata = rag_generator._build_sources_metadata(results)
         
-        # Build prompt
-        user_message = f"""Based on the following research paper excerpts, answer this question:
-
-Question: {query}
-
-Research Paper Excerpts:
-{context}
-
-IMPORTANT: You have been provided with {len(results)} paper excerpts. Make sure to:
-1. Review ALL provided papers and cite every one that is relevant to the question
-2. Use inline citations [Paper Title] for all claims
-3. For "which paper" or "what papers" questions, list ALL relevant papers
-4. Do NOT include a References section - only use inline citations"""
-
-        # Stream from OpenRouter
-        import requests
-        
-        headers = {
-            "Authorization": f"Bearer {rag_generator.openrouter_api_key}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": f"openai/{rag_generator.config.llm_model}",
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message}
-            ],
-            "temperature": rag_generator.config.temperature,
-            "max_tokens": rag_generator.config.max_tokens,
-            "stream": True
-        }
-        
-        response = requests.post(
-            f"{rag_generator.openrouter_base_url}/chat/completions",
-            headers=headers,
-            json=payload,
-            stream=True
+        # Generate answer using the actual RAGGenerator
+        answer = await loop.run_in_executor(
+            None,
+            lambda: rag_generator._call_llm(query, context)
         )
-        
-        answer_chunks = []
-        for line in response.iter_lines():
-            if line:
-                line = line.decode('utf-8')
-                if line.startswith('data: '):
-                    data = line[6:]  # Remove 'data: ' prefix
-                    if data == '[DONE]':
-                        break
-                    try:
-                        chunk = json.loads(data)
-                        if chunk["choices"][0]["delta"].get("content"):
-                            content = chunk["choices"][0]["delta"]["content"]
-                            answer_chunks.append(content)
-                            yield emit("chunk", {"content": content})
-                    except json.JSONDecodeError:
-                        continue
-        
-        answer = "".join(answer_chunks)
+
+        # Send the generated answer to the frontend
+        yield emit("chunk", {"content": answer})
         
         # Stage 4: Complete
         processing_time = time.time() - start_time
         yield emit("complete", {
             "answer": answer,
-            "sources": list(sources_metadata.values()),
+            "sources": sources_metadata,
             "refined_query": refined if refined != query else None,
             "processing_time": processing_time
         })

@@ -23,7 +23,14 @@ export function ReferencesSection({ answer, allSources, isVisible }: ReferencesS
     let match
     
     while ((match = citationRegex.exec(text)) !== null) {
-      citations.add(match[1])
+      const individualCitations = match[1].split(";")
+
+      individualCitations.forEach((citation) => {
+        const trimmedCitation = citation.trim()
+        if (trimmedCitation) {
+          citations.add(trimmedCitation)
+        }
+      })
     }
     
     return Array.from(citations)
